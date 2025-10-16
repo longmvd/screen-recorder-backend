@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  backend:
+    build: .
+    ports:
+      - "3000:3000"
+      - "8000:8000"
+    env_file:
+      - .env.development
+    environment:
+      - REDIS_HOST=redis # Override REDIS_HOST to use the service name
+    depends_on:
+      - redis
+    volumes:
+      - .:/usr/src/app
+      - /usr/src/app/node_modules
+      - /usr/src/app/dist
+
+  redis:
+    image: "redis:alpine"
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  redis_data:
