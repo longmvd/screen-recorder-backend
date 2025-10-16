@@ -1,18 +1,18 @@
 import {
   Controller,
   Get,
+  Inject,
+  Logger,
+  NotFoundException,
   Param,
   Res,
-  NotFoundException,
-  Logger,
   StreamableFile,
-  Inject,
 } from '@nestjs/common';
 import { type Response } from 'express';
-import { type IStorageService } from '../../intergrations/storage/storage.interface';
 import * as fs from 'fs';
 import { createReadStream } from 'fs';
-import { STORAGE_SERVICE } from '../../intergrations/storage/storage.token';
+import { type IStorageService } from '../../integrations/storage/storage.interface';
+import { STORAGE_SERVICE } from '../../integrations/storage/storage.token';
 
 @Controller('recordings')
 export class RecordingController {

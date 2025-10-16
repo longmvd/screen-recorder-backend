@@ -4,10 +4,10 @@ import {
   OnGatewayInit,
   WebSocketGateway,
 } from '@nestjs/websockets';
-import { RecordingService } from './recording.service';
-import { RedisService } from '../../intergrations/redis/redis.service';
 import { NotificationService } from '../../core/notifications/notification.service';
-import { WebSocketNotificationService } from '../../intergrations/websocket/websocket-notification.service';
+import { RedisService } from '../../integrations/redis/redis.service';
+import { WebSocketNotificationService } from '../../integrations/websocket/websocket-notification.service';
+import { RecordingService } from './recording.service';
 
 import {
   ConnectedSocket,

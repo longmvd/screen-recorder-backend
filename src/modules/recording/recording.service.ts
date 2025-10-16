@@ -1,15 +1,15 @@
-import { Injectable, Logger, Inject } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
-import { FfmpegService } from '../../intergrations/ffmpeg/ffmpeg.service';
-import { type IStorageService } from '../../intergrations/storage/storage.interface';
+import { getStorageConfig } from '../../config/storage.config';
 import { NotificationService } from '../../core/notifications/notification.service';
 import {
   NotificationChannel,
   NotificationPriority,
 } from '../../core/notifications/notification.types';
-import { getStorageConfig } from '../../config/storage.config';
-import { STORAGE_SERVICE } from '../../intergrations/storage/storage.token';
+import { FfmpegService } from '../../integrations/ffmpeg/ffmpeg.service';
+import { type IStorageService } from '../../integrations/storage/storage.interface';
+import { STORAGE_SERVICE } from '../../integrations/storage/storage.token';
 
 @Injectable()
 export class RecordingService {

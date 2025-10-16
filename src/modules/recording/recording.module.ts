@@ -1,15 +1,15 @@
+import { RedisModule } from '@/integrations/redis/redis.module';
 import { Module } from '@nestjs/common';
+import { getStorageConfig } from '../../config/storage.config';
+import { NotificationModule } from '../../core/notifications/notification.module';
+import { EmailNotificationModule } from '../../integrations/email/email-notification.module';
+import { FfmpegModule } from '../../integrations/ffmpeg/ffmpeg.module';
+import { LocalStorageService } from '../../integrations/storage/local-storage.service';
+import { STORAGE_SERVICE } from '../../integrations/storage/storage.token';
+import { WebSocketNotificationModule } from '../../integrations/websocket/websocket-notification.module';
+import { RecordingController } from './recording.controller';
 import { RecordingGateway } from './recording.gateway';
 import { RecordingService } from './recording.service';
-import { RecordingController } from './recording.controller';
-import { RedisModule } from 'src/intergrations/redis/redis.module';
-import { FfmpegModule } from '../../intergrations/ffmpeg/ffmpeg.module';
-import { NotificationModule } from '../../core/notifications/notification.module';
-import { WebSocketNotificationModule } from '../../intergrations/websocket/websocket-notification.module';
-import { EmailNotificationModule } from '../../intergrations/email/email-notification.module';
-import { LocalStorageService } from '../../intergrations/storage/local-storage.service';
-import { getStorageConfig } from '../../config/storage.config';
-import { STORAGE_SERVICE } from '../../intergrations/storage/storage.token';
 
 @Module({
   imports: [
