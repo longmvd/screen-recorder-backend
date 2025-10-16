@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-call */
 import {
   OnGatewayConnection,
   OnGatewayDisconnect,
@@ -6,8 +5,10 @@ import {
   WebSocketGateway,
 } from '@nestjs/websockets';
 import { RecordingService } from './recording.service';
+import { RedisService } from '../../intergrations/redis/redis.service';
+import { NotificationService } from '../../core/notifications/notification.service';
+import { WebSocketNotificationService } from '../../intergrations/websocket/websocket-notification.service';
 
-// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 import {
   ConnectedSocket,
   MessageBody,
@@ -15,7 +16,6 @@ import {
 } from '@nestjs/websockets';
 import { Socket } from 'socket.io';
 
-// eslint-disable-next-line @typescript-eslint/no-unsafe-call
 @WebSocketGateway(8000, {
   transports: ['websocket'],
   namespace: '/recording',
@@ -26,25 +26,40 @@ import { Socket } from 'socket.io';
 export class RecordingGateway
   implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
 {
-  constructor(private readonly recordingService: RecordingService) {}
+  server: any;
+
+  constructor(
+    private readonly recordingService: RecordingService,
+    private readonly redisService: RedisService,
+    private readonly notificationService: NotificationService,
+    private readonly websocketNotificationService: WebSocketNotificationService,
+  ) {}
+
   handleDisconnect(client: any) {
     console.log('Disconnected');
   }
+
   afterInit(server: any) {
-    console.log('Initialized');
+    this.server = server;
+
+    // Initialize WebSocket notification channel
+    this.websocketNotificationService.setServer(server);
+
+    // Register WebSocket channel with core notification service
+    this.notificationService.registerChannel(this.websocketNotificationService);
+
+    console.log('Initialized - WebSocket notification channel registered');
   }
+
   handleConnection(client: any, ...args: any[]) {
     console.log('Connected');
   }
-
-  private sessionChunkIndex: Record<string, number> = {};
 
   @SubscribeMessage('start')
   async handleStart(
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { recordId: string },
   ) {
-    this.sessionChunkIndex[data.recordId] = 0;
     await this.recordingService.startRecording(data.recordId);
     client.emit('started', { recordId: data.recordId });
   }
@@ -55,9 +70,8 @@ export class RecordingGateway
     @MessageBody() data: { recordId: string; chunk: Buffer },
   ) {
     console.log(data);
-    const index = this.sessionChunkIndex[data.recordId] ?? 0;
+    const index = await this.redisService.getNextChunkIndex(data.recordId);
     await this.recordingService.saveChunk(data.recordId, data.chunk, index);
-    this.sessionChunkIndex[data.recordId] = index + 1;
     client.emit('chunkSaved', { recordId: data.recordId, index });
   }
 
@@ -67,7 +81,7 @@ export class RecordingGateway
     @ConnectedSocket() client: Socket,
   ) {
     await this.recordingService.finishRecording(data.recordId);
-    delete this.sessionChunkIndex[data.recordId];
+    await this.redisService.deleteRecordingData(data.recordId);
     client.emit('finished', { recordId: data.recordId });
   }
 }
