@@ -1,0 +1,18 @@
+{
+  "folders": [
+    {
+      "path": ".",
+    },
+    {
+      "path": "../screen-recorder",
+    },
+  ],
+  "settings": {
+    "debug.console.fontSize": 14,
+    "debug.console.wordWrap": true,
+    "debug.javascript.autoAttachFilter": "smart",
+    "debug.javascript.unmapMissingSources": true,
+    "typescript.tsdk": "node_modules/typescript/lib",
+    "liveServer.settings.multiRootWorkspaceName": "screen-recorder",
+  },
+}

@@ -27,6 +27,14 @@ export class RecordingGateway
   implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
 {
   server: any;
+  private activeRecordings = new Map<
+    string,
+    {
+      recordId: string;
+      startedAt: number;
+      lastChunkAt: number;
+    }
+  >();
 
   constructor(
     private readonly recordingService: RecordingService,
@@ -35,14 +43,82 @@ export class RecordingGateway
     private readonly websocketNotificationService: WebSocketNotificationService,
   ) {}
 
-  handleDisconnect(client: any) {
-    console.log('Disconnected');
+  handleDisconnect(client: Socket) {
+    const recording = this.activeRecordings.get(client.id);
+
+    if (recording) {
+      console.log(
+        `Client disconnected with active recording: ${recording.recordId}`,
+      );
+
+      // Auto-finalize after grace period
+      setTimeout(() => {
+        void this.autoFinalizeRecording(client.id, recording.recordId);
+      }, 5000); // 5 second grace period for reconnection
+    }
+
+    console.log('Client disconnected');
+  }
+
+  private async autoFinalizeRecording(
+    clientId: string,
+    recordId: string,
+  ): Promise<void> {
+    // Check local tracking first (optimization for single instance)
+    if (!this.activeRecordings.has(clientId)) {
+      console.log(
+        `Skipping auto-finalize for ${recordId} - already stopped locally`,
+      );
+      return;
+    }
+
+    // Try to acquire distributed lock (HA-safe)
+    const lockAcquired =
+      await this.redisService.acquireFinalizationLock(recordId);
+
+    if (!lockAcquired) {
+      console.log(
+        `Recording ${recordId} already being finalized by another process`,
+      );
+      this.activeRecordings.delete(clientId);
+      return;
+    }
+
+    try {
+      console.log(`Auto-finalizing recording after disconnect: ${recordId}`);
+      await this.recordingService.finishRecording(recordId);
+      await this.redisService.deleteRecordingData(recordId);
+      console.log(`Auto-finalized recording: ${recordId}`);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      console.error(`Auto-finalize failed for ${recordId}:`, errorMessage);
+      // Cleanup anyway even if merge fails
+      try {
+        await this.recordingService.cleanupChunks(recordId);
+        await this.redisService.deleteRecordingData(recordId);
+      } catch (cleanupError) {
+        const cleanupErrorMessage =
+          cleanupError instanceof Error
+            ? cleanupError.message
+            : 'Unknown error';
+        console.error(
+          `Cleanup also failed for ${recordId}:`,
+          cleanupErrorMessage,
+        );
+      }
+    } finally {
+      this.activeRecordings.delete(clientId);
+      // Always release lock, even if error occurred
+      await this.redisService.releaseFinalizationLock(recordId);
+    }
   }
 
   afterInit(server: any) {
     this.server = server;
 
     // Initialize WebSocket notification channel
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
     this.websocketNotificationService.setServer(server);
 
     // Register WebSocket channel with core notification service
@@ -51,7 +127,7 @@ export class RecordingGateway
     console.log('Initialized - WebSocket notification channel registered');
   }
 
-  handleConnection(client: any, ...args: any[]) {
+  handleConnection() {
     console.log('Connected');
   }
 
@@ -60,6 +136,20 @@ export class RecordingGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() data: { recordId: string },
   ) {
+    // Track this recording for this client
+    this.activeRecordings.set(client.id, {
+      recordId: data.recordId,
+      startedAt: Date.now(),
+      lastChunkAt: Date.now(),
+    });
+
+    // Store in Redis for HA compatibility
+    await this.redisService.set(
+      `recording:${data.recordId}:started_at`,
+      Date.now().toString(),
+      7200, // 2 hours TTL
+    );
+
     await this.recordingService.startRecording(data.recordId);
     client.emit('started', { recordId: data.recordId });
   }
@@ -67,12 +157,47 @@ export class RecordingGateway
   @SubscribeMessage('chunk')
   async handleChunk(
     @ConnectedSocket() client: Socket,
-    @MessageBody() data: { recordId: string; chunk: Buffer },
+    @MessageBody() data: { recordId: string; chunk: Buffer; checksum?: string },
   ) {
-    console.log(data);
-    const index = await this.redisService.getNextChunkIndex(data.recordId);
-    await this.recordingService.saveChunk(data.recordId, data.chunk, index);
-    client.emit('chunkSaved', { recordId: data.recordId, index });
+    try {
+      // Update last activity timestamp
+      const recording = this.activeRecordings.get(client.id);
+      if (recording) {
+        recording.lastChunkAt = Date.now();
+      }
+
+      // Get next index from Redis (HA-safe, atomic operation)
+      const index = await this.redisService.getNextChunkIndex(data.recordId);
+
+      // Save chunk to filesystem
+      await this.recordingService.saveChunk(data.recordId, data.chunk, index);
+
+      // Send success acknowledgment
+      client.emit('chunkAck', {
+        recordId: data.recordId,
+        index: index,
+        status: 'success',
+        timestamp: Date.now(),
+      });
+
+      console.log(
+        `[Recording ${data.recordId}] Chunk ${index} saved successfully (${data.chunk.length} bytes)`,
+      );
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      console.error(
+        `[Recording ${data.recordId}] Failed to save chunk:`,
+        errorMessage,
+      );
+
+      // Send error notification to client
+      client.emit('chunkError', {
+        recordId: data.recordId,
+        error: errorMessage,
+        timestamp: Date.now(),
+      });
+    }
   }
 
   @SubscribeMessage('stop')
@@ -80,8 +205,40 @@ export class RecordingGateway
     @MessageBody() data: { recordId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    await this.recordingService.finishRecording(data.recordId);
-    await this.redisService.deleteRecordingData(data.recordId);
-    client.emit('finished', { recordId: data.recordId });
+    // Try to acquire distributed lock to prevent duplicate finalization
+    const lockAcquired = await this.redisService.acquireFinalizationLock(
+      data.recordId,
+    );
+
+    if (!lockAcquired) {
+      console.log(
+        `Recording ${data.recordId} already being finalized by another process`,
+      );
+      client.emit('finished', {
+        recordId: data.recordId,
+        note: 'Already processed',
+      });
+      return;
+    }
+
+    // Remove from local tracking
+    this.activeRecordings.delete(client.id);
+
+    try {
+      await this.recordingService.finishRecording(data.recordId);
+      await this.redisService.deleteRecordingData(data.recordId);
+      client.emit('finished', { recordId: data.recordId });
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      console.error(
+        `Failed to finish recording ${data.recordId}:`,
+        errorMessage,
+      );
+      throw error;
+    } finally {
+      // Always release lock, even if error occurred
+      await this.redisService.releaseFinalizationLock(data.recordId);
+    }
   }
 }

@@ -8,6 +8,7 @@ import {
   NotificationPriority,
 } from '../../core/notifications/notification.types';
 import { FfmpegService } from '../../integrations/ffmpeg/ffmpeg.service';
+import { RedisService } from '../../integrations/redis/redis.service';
 import { type IStorageService } from '../../integrations/storage/storage.interface';
 import { STORAGE_SERVICE } from '../../integrations/storage/storage.token';
 
@@ -21,6 +22,7 @@ export class RecordingService {
     @Inject(STORAGE_SERVICE)
     private readonly storageService: IStorageService,
     private readonly notificationService: NotificationService,
+    private readonly redisService: RedisService,
   ) {}
 
   async startRecording(recordId: string) {
@@ -38,13 +40,79 @@ export class RecordingService {
       `chunk-${index.toString().padStart(3, '0')}.webm`,
     );
     await fs.promises.writeFile(filename, chunk);
+
+    // Store chunk metadata in Redis for tracking
+    await this.redisService.setChunkMetadata(recordId, index, {
+      size: chunk.length,
+      timestamp: Date.now(),
+    });
+
+    this.logger.debug(`Saved chunk ${index} for recording ${recordId}`);
+  }
+
+  /**
+   * Validate that all chunks are present before merging
+   */
+  async validateChunks(recordId: string): Promise<{
+    valid: boolean;
+    missingChunks: number[];
+    totalChunks: number;
+  }> {
+    const expectedCount = await this.redisService.getChunkCount(recordId);
+    const missingChunks: number[] = [];
+    const dir = path.join(this.config.tempDir, recordId);
+
+    for (let i = 0; i < expectedCount; i++) {
+      const filename = path.join(
+        dir,
+        `chunk-${i.toString().padStart(3, '0')}.webm`,
+      );
+
+      if (!fs.existsSync(filename)) {
+        missingChunks.push(i);
+      }
+    }
+
+    return {
+      valid: missingChunks.length === 0,
+      missingChunks,
+      totalChunks: expectedCount,
+    };
   }
 
   async finishRecording(recordId: string) {
     this.logger.log(`Finishing recording: ${recordId}`);
 
     try {
-      // 1. Merge chunks with FFmpeg
+      // 1. Validate all chunks are present
+      const validation = await this.validateChunks(recordId);
+
+      if (!validation.valid) {
+        const error = `Missing chunks: ${validation.missingChunks.join(', ')} (total expected: ${validation.totalChunks})`;
+        this.logger.error(error);
+
+        await this.notificationService.send({
+          recipient: recordId,
+          channel: [NotificationChannel.WEBSOCKET],
+          priority: NotificationPriority.HIGH,
+          category: 'recording',
+          event: 'recordingError',
+          data: {
+            recordId,
+            error,
+            missingChunks: validation.missingChunks,
+            totalChunks: validation.totalChunks,
+          },
+        });
+
+        throw new Error(error);
+      }
+
+      this.logger.log(
+        `All ${validation.totalChunks} chunks validated for recording ${recordId}`,
+      );
+
+      // 2. Merge chunks with FFmpeg
       const outputPath = path.join(
         this.config.tempDir,
         recordId,
@@ -113,7 +181,7 @@ export class RecordingService {
     }
   }
 
-  private async cleanupChunks(recordId: string): Promise<void> {
+  async cleanupChunks(recordId: string): Promise<void> {
     try {
       const chunkDir = path.join(this.config.tempDir, recordId);
 
